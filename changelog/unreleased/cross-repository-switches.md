@@ -6,4 +6,4 @@ authors:
 created: 2026-09-03T14:30:00Z
 ---
 
-Pi now follows an explicit Worktrunk switch into another repository when the command uses `-C`. The source session stays available, and the task resumes from a linked session in the selected repository.
+Pi now follows an explicit Worktrunk switch into another repository when the command uses `-C`. The source session stays available, and the task resumes from a linked session in the selected repository. When Pi completes the move itself, it also hides Worktrunk's shell auto-cd warning while preserving the rest of the command output.

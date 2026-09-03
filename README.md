@@ -32,9 +32,11 @@ Two bare commands open compact Pi interfaces:
 
 After other successful commands, Pi moves when Worktrunk reports a destination
 or creates exactly one worktree. An explicit `-C` also lets Pi follow a switch
-into another repository. If the command removes the current worktree,
-Pi recovers in a surviving worktree. Pi stays put when no unique destination can
-be identified or when a command fails without removing the current worktree.
+into another repository. When Pi completes the move, it hides Worktrunk's shell
+auto-cd warning and keeps the rest of the command output. If the command removes
+the current worktree, Pi recovers in a surviving worktree. Pi stays put when no
+unique destination can be identified or when a command fails without removing
+the current worktree.
 
 Each move creates a linked Pi session in the destination. The source session
 remains available through `/resume`.

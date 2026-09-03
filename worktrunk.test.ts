@@ -448,6 +448,11 @@ test("explicit cross-repository switch moves and resumes model work", async () =
   const sent: Array<{ text: string; options: any }> = [];
   let switched = "";
   let continuation: any;
+  const notifications: string[] = [];
+  const shellWarning = [
+    `▲ Worktree for main @ ${target}, but cannot change directory — shell integration installed but not active`,
+    "↳ A shell restart usually activates shell integration; if it doesn't, ask an agent to debug with the docs @ https://worktrunk.dev/llms.txt",
+  ].join("\n");
   try {
     extension(baseApi({
       handlers, commands, tools, sent,
@@ -469,7 +474,7 @@ test("explicit cross-repository switch moves and resumes model work", async () =
               : list([{ branch: "main", worktree: { path: source, main: true, current: true } }]),
           };
         }
-        return { code: 0, stdout: "switched" };
+        return { code: 0, stdout: `switched\n${shellWarning}` };
       },
     }));
     const sessionCtx = { cwd: source, signal: undefined, sessionManager: manager };
@@ -494,12 +499,15 @@ test("explicit cross-repository switch moves and resumes model work", async () =
         });
         return { cancelled: false };
       },
-      ui: { notify() {} },
+      ui: { notify(message: string) { notifications.push(message); } },
     });
     assert.notEqual(switched, "", "Pi should switch into the target repository");
     const destination = SessionManager.open(switched, sessions);
     assert.equal(destination.getCwd(), realpathSync(target));
     assert.equal(continuation.message.display, false);
+    assert.match(continuation.message.content, /switched/);
+    assert.doesNotMatch(continuation.message.content, /cannot change directory/);
+    assert.deepEqual(notifications, ["switched"]);
     assert.equal(continuation.opts.triggerTurn, true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

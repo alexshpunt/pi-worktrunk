@@ -197,6 +197,12 @@ function approvalHint(output: string): string {
 function missingCwdMessage(cwd: string): string {
   return `Pi's working directory no longer exists: ${cwd}. Continue the session from an existing worktree or restart Pi there.`;
 }
+function withoutHandledShellWarning(output: string): string {
+  return output.replace(
+    /(?:^|\n)▲ Worktree for [^\n]*, but cannot change directory — shell integration installed but not active\n↳ A shell restart usually activates shell integration; if it doesn't, ask an agent to debug with the docs @ https:\/\/worktrunk\.dev\/llms\.txt(?=\n|$)/g,
+    "",
+  ).replace(/^\n|\n$/g, "");
+}
 function boundedModelOutput(output: string): string {
   return output.length > MAX_CONTINUATION_OUTPUT
     ? `${output.slice(0, MAX_CONTINUATION_OUTPUT)}\n\n[output truncated]`
@@ -647,13 +653,16 @@ export default function extension(pi: ExtensionAPI) {
     try { result = await runWt(args, { cwd: ctx.cwd, signal: ctx.signal, cwdMode: "repository-read" }); }
     catch (error) { result = { code: -1, stderr: error instanceof Error ? error.message : String(error) }; }
     const output = [result.stdout?.trimEnd(), result.stderr?.trimEnd()].filter(Boolean).join("\n");
-    if (output) emit(ctx, output, result.code === 0 ? "info" : "error");
     const base: Execution = { result, output, moved: false, canContinue: existsSync(ctx.cwd) };
+    const emitOutput = (value = output) => {
+      if (value) emit(ctx, value, result.code === 0 ? "info" : "error");
+    };
     const continuation = modelOrigin ? continuationMessage(invocation, base) : undefined;
 
     const sourceAfter = await safeList(ctx.cwd, ctx.signal);
     if (!existsSync(ctx.cwd)) {
       const recovery = recoveryTarget(trail, sourceAfter);
+      emitOutput();
       if (!recovery.target?.worktree?.path) {
         emit(ctx, "Pi's worktree was removed and no surviving worktree was found.", "error");
         return { ...base, canContinue: false };
@@ -677,7 +686,10 @@ export default function extension(pi: ExtensionAPI) {
         return { ...base, canContinue: false };
       }
     }
-    if (result.code !== 0 || result.killed) return base;
+    if (result.code !== 0 || result.killed) {
+      emitOutput();
+      return base;
+    }
 
     const after = canonicalPath(placementCwd) === canonicalPath(ctx.cwd)
       ? sourceAfter
@@ -687,9 +699,17 @@ export default function extension(pi: ExtensionAPI) {
       const exact = exactSwitchTarget(invocation);
       if (exact) target = resolveWorktree(after, exact);
     }
-    if (!target?.worktree?.path) return base;
-    if (canonicalPath(target.worktree.path) === canonicalPath(ctx.cwd)) return base;
-    if (!interactive || !ctx.sessionManager.getSessionFile()) return base;
+    if (
+      !target?.worktree?.path ||
+      canonicalPath(target.worktree.path) === canonicalPath(ctx.cwd) ||
+      !interactive ||
+      !ctx.sessionManager.getSessionFile()
+    ) {
+      emitOutput();
+      return base;
+    }
+    const movedOutput = withoutHandledShellWarning(output);
+    const moved: Execution = { ...base, output: movedOutput, moved: true };
     try {
       await activate(
         ctx,
@@ -697,10 +717,12 @@ export default function extension(pi: ExtensionAPI) {
         await locationFor(target, ctx.signal),
         nextTrail(survivingTrail(trail, after), source),
         "move",
-        continuation,
+        modelOrigin ? continuationMessage(invocation, moved) : undefined,
       );
-      return { ...base, moved: true };
+      emitOutput(movedOutput);
+      return moved;
     } catch (error) {
+      emitOutput();
       emit(ctx, error instanceof Error ? error.message : String(error), "error");
       return base;
     }
