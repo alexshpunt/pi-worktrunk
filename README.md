@@ -1,7 +1,7 @@
 # 🚦 pi-worktrunk
 
-A [Pi](https://pi.dev) extension that runs Worktrunk commands, follows worktree
-changes with linked sessions, and reports Pi status in `wt list`.
+A [Pi](https://pi.dev) extension that runs Worktrunk commands, moves the active
+session with worktree changes, and reports Pi status in `wt list`.
 
 ## 🚀 Installation
 
@@ -38,8 +38,11 @@ the current worktree, Pi recovers in a surviving worktree. Pi stays put when no
 unique destination can be identified or when a command fails without removing
 the current worktree.
 
-Each move creates a linked Pi session in the destination. The source session
-remains available through `/resume`.
+Each successful move transfers the active Pi session to the destination. The
+conversation keeps its session identity and history, while the source file is
+removed so repeated jumps leave one session in `/resume`. If destination
+activation is cancelled or fails, Pi keeps the source and removes the prepared
+destination copy.
 
 ### 🏷️ Worktrunk aliases
 
@@ -91,7 +94,7 @@ result, and resume the task there.
 - Recovery takes precedence when a command removes the current worktree.
 - Worktrunk retains control of hooks, project-command approvals, dirty-worktree
   checks, force flags, branch deletion, and command errors.
-- Session movement preserves the source session.
+- Session movement keeps the source until the destination is active, then removes it.
 
 ## 📄 License
 

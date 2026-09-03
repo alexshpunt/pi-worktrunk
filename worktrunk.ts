@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, resolve, sep } from "node:path";
 
@@ -36,6 +36,9 @@ type RunWtOptions = {
   cwdMode?: "repository-read";
 };
 type RunWt = (args: string[], options?: RunWtOptions) => Promise<WtResult>;
+
+type SwitchSessionOptions = NonNullable<Parameters<ExtensionCommandContext["switchSession"]>[1]>;
+type ReplacedSessionContext = Parameters<NonNullable<SwitchSessionOptions["withSession"]>>[0];
 
 export type SessionSnapshot = { header: SessionHeader; entries: SessionEntry[] };
 type Relation = { ahead?: number; behind?: number };
@@ -135,19 +138,28 @@ function targetSessionDirectory(manager: ExtensionCommandContext["sessionManager
   const full = manager as typeof manager & { usesDefaultSessionDir?: () => boolean };
   return full.usesDefaultSessionDir?.() ? undefined : manager.getSessionDir();
 }
-export function forkSessionFromSnapshot(
+/** Prepare the active session at a new cwd while preserving its logical identity. */
+export function prepareSessionMove(
   sourceSession: string,
   targetCwd: string,
-  snapshot?: SessionSnapshot,
+  snapshot: SessionSnapshot,
   targetSessionDir?: string,
 ): { destinationSession: string } {
-  if (sessionFileIsUnwritten(sourceSession)) {
-    if (!snapshot) throw new Error("Cannot copy an unwritten session without a snapshot.");
-    materializeSessionSnapshot(sourceSession, snapshot);
-  }
-  const manager = SessionManager.forkFrom(sourceSession, targetCwd, targetSessionDir);
+  if (sessionFileIsUnwritten(sourceSession)) materializeSessionSnapshot(sourceSession, snapshot);
+  const manager = SessionManager.create(targetCwd, targetSessionDir, { id: snapshot.header.id });
   const destinationSession = manager.getSessionFile();
-  if (!destinationSession) throw new Error("Pi did not create a persisted session copy.");
+  if (!destinationSession) throw new Error("Pi did not prepare a persisted session destination.");
+  const { parentSession: _parentSession, ...sourceHeader } = snapshot.header;
+  const targetSnapshot: SessionSnapshot = {
+    header: { ...sourceHeader, cwd: canonicalPath(targetCwd) },
+    entries: snapshot.entries,
+  };
+  try {
+    writeFileSync(destinationSession, serializeSession(targetSnapshot), { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    rmSync(destinationSession, { force: true });
+    throw error;
+  }
   return { destinationSession };
 }
 
@@ -448,25 +460,30 @@ function recoveryTarget(trail: readonly SessionLocation[], worktrees: readonly W
 function nextTrail(trail: readonly SessionLocation[], source: SessionLocation): SessionLocation[] {
   return [...trail, source].slice(-32);
 }
-function createLinkedSession(ctx: ExtensionCommandContext, source: SessionLocation, target: SessionLocation, trail: SessionLocation[], kind: SessionTransitionKind): string {
+function prepareLinkedSession(ctx: ExtensionCommandContext, source: SessionLocation, target: SessionLocation, trail: SessionLocation[], kind: SessionTransitionKind): { sourceSession: string; destinationSession: string } {
   const sourceSession = ctx.sessionManager.getSessionFile();
   if (!sourceSession) throw new WorktrunkError("Cannot move an ephemeral Pi session.");
-  let snapshot: SessionSnapshot | undefined;
-  if (sessionFileIsUnwritten(sourceSession)) {
-    const header = ctx.sessionManager.getHeader();
-    if (!header) throw new WorktrunkError("The source session has no header.");
-    snapshot = { header: structuredClone(header), entries: structuredClone(ctx.sessionManager.getEntries()) };
-  }
+  const header = ctx.sessionManager.getHeader();
+  if (!header) throw new WorktrunkError("The source session has no header.");
+  const snapshot: SessionSnapshot = {
+    header: structuredClone(header),
+    entries: structuredClone(ctx.sessionManager.getEntries()),
+  };
   const targetSessionDir = targetSessionDirectory(ctx.sessionManager);
-  const { destinationSession } = forkSessionFromSnapshot(sourceSession, target.path, snapshot, targetSessionDir);
-  const destination = SessionManager.open(destinationSession, targetSessionDir);
-  destination.appendCustomMessageEntry(
-    SESSION_TRANSITION_MESSAGE,
-    "",
-    true,
-    { kind, source, target, trail, sourceSession, destinationSession } satisfies SessionTransitionDetails,
-  );
-  return destinationSession;
+  const { destinationSession } = prepareSessionMove(sourceSession, target.path, snapshot, targetSessionDir);
+  try {
+    const destination = SessionManager.open(destinationSession, targetSessionDir);
+    destination.appendCustomMessageEntry(
+      SESSION_TRANSITION_MESSAGE,
+      "",
+      true,
+      { kind, source, target, trail, sourceSession, destinationSession } satisfies SessionTransitionDetails,
+    );
+  } catch (error) {
+    rmSync(destinationSession, { force: true });
+    throw error;
+  }
+  return { sourceSession, destinationSession };
 }
 
 function repositoryIdentity(commonDir: string): RepositoryIdentity | undefined {
@@ -606,16 +623,28 @@ export default function extension(pi: ExtensionAPI) {
     kind: SessionTransitionKind,
     continuation?: ReturnType<typeof continuationMessage>,
   ) {
-    const destinationSession = createLinkedSession(ctx, source, target, trail, kind);
-    const result = await ctx.switchSession(destinationSession, {
-      withSession: async (nextCtx) => {
-        nextCtx.ui.notify(`Session ${kind === "recovery" ? "recovered" : "moved"} from ${source.branch ?? source.path} to ${target.branch ?? target.path}.`, "info");
-        if (continuation) {
-          await nextCtx.sendMessage(continuation, { triggerTurn: true });
-        }
-      },
-    });
-    if (result.cancelled) throw new WorktrunkError(`Pi created ${destinationSession}, but session switching was cancelled.`);
+    const { sourceSession, destinationSession } = prepareLinkedSession(ctx, source, target, trail, kind);
+    let nextCtx: ReplacedSessionContext | undefined;
+    let result: Awaited<ReturnType<ExtensionCommandContext["switchSession"]>>;
+    try {
+      result = await ctx.switchSession(destinationSession, {
+        withSession: async (replacementCtx) => { nextCtx = replacementCtx; },
+      });
+    } catch (error) {
+      rmSync(destinationSession, { force: true });
+      throw error;
+    }
+    if (result.cancelled || !nextCtx) {
+      rmSync(destinationSession, { force: true });
+      throw new WorktrunkError(`Pi prepared ${destinationSession}, but session switching was cancelled.`);
+    }
+    try {
+      rmSync(sourceSession);
+    } catch (error) {
+      throw new WorktrunkError(`Pi moved to ${destinationSession}, but could not remove the source session ${sourceSession}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    nextCtx.ui.notify(`Session ${kind === "recovery" ? "recovered" : "moved"} from ${source.branch ?? source.path} to ${target.branch ?? target.path}.`, "info");
+    if (continuation) await nextCtx.sendMessage(continuation, { triggerTurn: true });
   }
 
   async function executeInvocation(invocation: Invocation, ctx: ExtensionCommandContext, modelOrigin = false): Promise<Execution> {

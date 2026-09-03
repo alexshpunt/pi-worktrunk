@@ -377,6 +377,8 @@ test("create-and-switch moves and resumes model work", async () => {
   await mkdir(common, { recursive: true });
   const manager = SessionManager.create(source, sessions);
   manager.appendSessionInfo("test");
+  const sourceSession = manager.getSessionFile()!;
+  const sourceSessionId = manager.getSessionId();
   const handlers = new Map<string, any>();
   const commands = new Map<string, any>();
   const tools = new Map<string, any>();
@@ -420,6 +422,9 @@ test("create-and-switch moves and resumes model work", async () => {
     assert.ok(wtCalls.some((args) => args.join("\0") === ["switch", "--create", "fix/parser"].join("\0")));
     const destination = SessionManager.open(switched, sessions);
     assert.equal(destination.getCwd(), realpathSync(target));
+    assert.equal(destination.getSessionId(), sourceSessionId);
+    assert.equal(destination.getHeader()?.parentSession, undefined);
+    assert.equal(existsSync(sourceSession), false);
     const transition = destination.getEntries().at(-1);
     assert.equal(transition?.type, "custom_message");
     if (transition?.type === "custom_message") {
@@ -428,6 +433,48 @@ test("create-and-switch moves and resumes model work", async () => {
     }
     assert.equal(continuation.message.display, false);
     assert.equal(continuation.opts.triggerTurn, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("cancelled or failed session activation keeps only the source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-worktrunk-cancelled-move-"));
+  const source = join(root, "repo");
+  const target = join(root, "repo.fix-parser");
+  const sessions = join(root, "sessions");
+  await mkdir(join(source, ".git"), { recursive: true });
+  await mkdir(target);
+  const manager = SessionManager.create(source, sessions);
+  manager.appendSessionInfo("test");
+  const sourceSession = manager.getSessionFile()!;
+  const handlers = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const tools = new Map<string, any>();
+  let preparedSession = "";
+  try {
+    extension(baseApi({ handlers, commands, tools, async exec(program, args) {
+      if (program === "git") return { code: 0, stdout: `${join(source, ".git")}\n`, stderr: "" };
+      if (args[0] === "--help") return { code: 0, stdout: "" };
+      if (args.includes("list")) return { code: 0, stdout: wtList(source, target) };
+      return { code: 0, stdout: "switched" };
+    } }));
+    const sessionCtx = { cwd: source, signal: undefined, sessionManager: manager };
+    await handlers.get("session_start")({}, sessionCtx);
+    for (const outcome of ["cancel", "throw"] as const) {
+      preparedSession = "";
+      await commands.get("wt").handler("switch fix/parser", {
+        ...sessionCtx, mode: "tui", hasUI: true,
+        async waitForIdle() {},
+        async switchSession(path: string) {
+          preparedSession = path;
+          if (outcome === "throw") throw new Error("activation failed");
+          return { cancelled: true };
+        },
+        ui: { notify() {} },
+      });
+      assert.equal(existsSync(sourceSession), true);
+      assert.notEqual(preparedSession, "");
+      assert.equal(existsSync(preparedSession), false);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -442,6 +489,7 @@ test("explicit cross-repository switch moves and resumes model work", async () =
   await mkdir(targetCommon, { recursive: true });
   const manager = SessionManager.create(source, sessions);
   manager.appendSessionInfo("test");
+  const sourceSession = manager.getSessionFile()!;
   const handlers = new Map<string, any>();
   const commands = new Map<string, any>();
   const tools = new Map<string, any>();
@@ -504,6 +552,7 @@ test("explicit cross-repository switch moves and resumes model work", async () =
     assert.notEqual(switched, "", "Pi should switch into the target repository");
     const destination = SessionManager.open(switched, sessions);
     assert.equal(destination.getCwd(), realpathSync(target));
+    assert.equal(existsSync(sourceSession), false);
     assert.equal(continuation.message.display, false);
     assert.match(continuation.message.content, /switched/);
     assert.doesNotMatch(continuation.message.content, /cannot change directory/);
@@ -672,6 +721,7 @@ test("a failed command that removes the cwd recovers and resumes with the failur
   await mkdir(source);
   const manager = SessionManager.create(source, sessions);
   manager.appendSessionInfo("test");
+  const sourceSession = manager.getSessionFile()!;
   const handlers = new Map<string, any>();
   const commands = new Map<string, any>();
   const tools = new Map<string, any>();
@@ -716,6 +766,7 @@ test("a failed command that removes the cwd recovers and resumes with the failur
       ui: { notify() {} },
     });
     assert.equal(SessionManager.open(switched, sessions).getCwd(), realpathSync(main));
+    assert.equal(existsSync(sourceSession), false);
     assert.match(continuation.message.content, /failed \(exit 1\).*land failed after cleanup/s);
     assert.equal(continuation.options.triggerTurn, true);
   } finally { await rm(root, { recursive: true, force: true }); }
