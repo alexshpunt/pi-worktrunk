@@ -189,6 +189,12 @@ test("tool queues aliases without confirmation", async () => {
     }),
     /still pending/,
   );
+
+  await handlers.get("session_shutdown")({}, { cwd: process.cwd() });
+  await tools.get("worktrunk").execute("after-switch", { command: "list" }, undefined, undefined, {
+    cwd: process.cwd(), hasUI: false, ui: {},
+  });
+  assert.equal(sent.length, 2);
 });
 
 test("non-interactive tools run Worktrunk before the session exits", async () => {
@@ -542,12 +548,13 @@ test("explicit cross-repository switch moves and resumes model work", async () =
       async switchSession(path: string, options: any) {
         switched = path;
         await options.withSession({
-          ui: { notify() {} },
+          mode: "tui",
+          ui: { notify(message: string) { notifications.push(message); } },
           async sendMessage(message: any, opts: any) { continuation = { message, opts }; },
         });
         return { cancelled: false };
       },
-      ui: { notify(message: string) { notifications.push(message); } },
+      ui: { notify() { throw new Error("stale command context"); } },
     });
     assert.notEqual(switched, "", "Pi should switch into the target repository");
     const destination = SessionManager.open(switched, sessions);
@@ -556,7 +563,7 @@ test("explicit cross-repository switch moves and resumes model work", async () =
     assert.equal(continuation.message.display, false);
     assert.match(continuation.message.content, /switched/);
     assert.doesNotMatch(continuation.message.content, /cannot change directory/);
-    assert.deepEqual(notifications, ["switched"]);
+    assert.deepEqual(notifications, ["Session moved from main to main.", "switched"]);
     assert.equal(continuation.opts.triggerTurn, true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

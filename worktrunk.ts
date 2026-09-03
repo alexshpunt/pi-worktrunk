@@ -622,6 +622,7 @@ export default function extension(pi: ExtensionAPI) {
     trail: SessionLocation[],
     kind: SessionTransitionKind,
     continuation?: ReturnType<typeof continuationMessage>,
+    output?: string,
   ) {
     const { sourceSession, destinationSession } = prepareLinkedSession(ctx, source, target, trail, kind);
     let nextCtx: ReplacedSessionContext | undefined;
@@ -644,6 +645,7 @@ export default function extension(pi: ExtensionAPI) {
       throw new WorktrunkError(`Pi moved to ${destinationSession}, but could not remove the source session ${sourceSession}: ${error instanceof Error ? error.message : String(error)}`);
     }
     nextCtx.ui.notify(`Session ${kind === "recovery" ? "recovered" : "moved"} from ${source.branch ?? source.path} to ${target.branch ?? target.path}.`, "info");
+    if (output) emit(nextCtx, output, "info");
     if (continuation) await nextCtx.sendMessage(continuation, { triggerTurn: true });
   }
 
@@ -747,8 +749,8 @@ export default function extension(pi: ExtensionAPI) {
         nextTrail(survivingTrail(trail, after), source),
         "move",
         modelOrigin ? continuationMessage(invocation, moved) : undefined,
+        movedOutput,
       );
-      emitOutput(movedOutput);
       return moved;
     } catch (error) {
       emitOutput();
@@ -948,5 +950,9 @@ export default function extension(pi: ExtensionAPI) {
   });
   pi.on("agent_start", (_event, ctx) => tracker.markWorking(ctx.cwd));
   pi.on("agent_end", (_event, ctx) => tracker.markWaiting(ctx.cwd));
-  pi.on("session_shutdown", (_event, ctx) => tracker.clear(ctx.cwd));
+  pi.on("session_shutdown", (_event, ctx) => {
+    pendingContinuation = undefined;
+    placementInFlight = false;
+    return tracker.clear(ctx.cwd);
+  });
 }
