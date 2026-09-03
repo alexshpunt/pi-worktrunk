@@ -174,6 +174,7 @@ function itemForPath(items: readonly WorktreeItem[], path: string): WorktreeItem
 }
 function resolveWorktree(items: readonly WorktreeItem[], ref: string): WorktreeItem | undefined {
   const matches = items.filter((item) =>
+    (ref === "@" && item.worktree?.current) ||
     item.branch === ref || item.worktree?.path === ref ||
     (item.worktree?.path && basename(item.worktree.path) === ref));
   const paths = new Set(matches.flatMap((item) => item.worktree?.path ? [canonicalPath(item.worktree.path)] : []));
@@ -341,9 +342,24 @@ function isBareCommand(invocation: Invocation, command: string): boolean {
   return invocation.command === command && invocation.commandArgs.length === 0;
 }
 function exactSwitchTarget(invocation: Invocation): string | undefined {
-  if (invocation.command !== "switch" || invocation.commandArgs.length !== 1) return undefined;
-  const value = invocation.commandArgs[0];
-  return value.startsWith("-") ? undefined : value;
+  if (invocation.command !== "switch") return undefined;
+  const args = positionalCommandArgs(invocation);
+  return args.length === 1 ? args[0] : undefined;
+}
+function effectiveWorktrunkCwd(invocation: Invocation, cwd: string): string {
+  let selected = cwd;
+  for (let index = 0; index < invocation.args.length; index += 1) {
+    const value = invocation.args[index];
+    if (value === "--") break;
+    if (value === "-C") {
+      const candidate = invocation.args[index + 1];
+      if (candidate !== undefined) selected = resolve(cwd, candidate);
+      index += 1;
+    } else if (value.startsWith("-C") && value.length > 2) {
+      selected = resolve(cwd, value.slice(value[2] === "=" ? 3 : 2));
+    }
+  }
+  return selected;
 }
 function positionalCommandArgs(invocation: Invocation): string[] {
   const result: string[] = [];
@@ -613,6 +629,10 @@ export default function extension(pi: ExtensionAPI) {
     const before = await safeList(ctx.cwd, ctx.signal);
     const sourceItem = itemForPath(before, ctx.cwd) ?? before.find((item) => item.worktree?.current);
     const source = worktreeLocation(sourceItem, ctx.cwd, storedRepositoryIdentity?.commonDir);
+    const placementCwd = effectiveWorktrunkCwd(invocation, ctx.cwd);
+    const placementBefore = canonicalPath(placementCwd) === canonicalPath(ctx.cwd)
+      ? before
+      : await safeList(placementCwd, ctx.signal);
     let args = invocation.args;
     let selected: WorktreeItem | undefined;
     if (!modelOrigin && isBareCommand(invocation, "switch") && interactive && ctx.hasUI) {
@@ -631,9 +651,9 @@ export default function extension(pi: ExtensionAPI) {
     const base: Execution = { result, output, moved: false, canContinue: existsSync(ctx.cwd) };
     const continuation = modelOrigin ? continuationMessage(invocation, base) : undefined;
 
-    const after = await safeList(ctx.cwd, ctx.signal);
+    const sourceAfter = await safeList(ctx.cwd, ctx.signal);
     if (!existsSync(ctx.cwd)) {
-      const recovery = recoveryTarget(trail, after);
+      const recovery = recoveryTarget(trail, sourceAfter);
       if (!recovery.target?.worktree?.path) {
         emit(ctx, "Pi's worktree was removed and no surviving worktree was found.", "error");
         return { ...base, canContinue: false };
@@ -659,7 +679,10 @@ export default function extension(pi: ExtensionAPI) {
     }
     if (result.code !== 0 || result.killed) return base;
 
-    let target = selected ?? uniqueCreatedTarget(before, after);
+    const after = canonicalPath(placementCwd) === canonicalPath(ctx.cwd)
+      ? sourceAfter
+      : await safeList(placementCwd, ctx.signal);
+    let target = selected ?? uniqueCreatedTarget(placementBefore, after);
     if (!target) {
       const exact = exactSwitchTarget(invocation);
       if (exact) target = resolveWorktree(after, exact);

@@ -431,6 +431,120 @@ test("create-and-switch moves and resumes model work", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("explicit cross-repository switch moves and resumes model work", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-worktrunk-cross-repo-"));
+  const source = join(root, "source");
+  const target = join(root, "target");
+  const sourceCommon = join(source, ".git");
+  const targetCommon = join(target, ".git");
+  const sessions = join(root, "sessions");
+  await mkdir(sourceCommon, { recursive: true });
+  await mkdir(targetCommon, { recursive: true });
+  const manager = SessionManager.create(source, sessions);
+  manager.appendSessionInfo("test");
+  const handlers = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const tools = new Map<string, any>();
+  const sent: Array<{ text: string; options: any }> = [];
+  let switched = "";
+  let continuation: any;
+  try {
+    extension(baseApi({
+      handlers, commands, tools, sent,
+      async exec(program, args, options) {
+        if (program === "git") {
+          return {
+            code: 0,
+            stdout: `${options?.cwd === target ? targetCommon : sourceCommon}\n`,
+            stderr: "",
+          };
+        }
+        if (args[0] === "--help") return { code: 0, stdout: "" };
+        if (args.includes("list")) {
+          const cwd = options?.cwd;
+          return {
+            code: 0,
+            stdout: cwd === target
+              ? list([{ branch: "main", worktree: { path: target, main: true, current: true } }])
+              : list([{ branch: "main", worktree: { path: source, main: true, current: true } }]),
+          };
+        }
+        return { code: 0, stdout: "switched" };
+      },
+    }));
+    const sessionCtx = { cwd: source, signal: undefined, sessionManager: manager };
+    await handlers.get("session_start")({}, sessionCtx);
+    await tools.get("worktrunk").execute(
+      "call",
+      { command: "switch", args: ["-C", target, "@"] },
+      undefined,
+      undefined,
+      { cwd: source, hasUI: true, ui: {} },
+    );
+    await commands.get("wt").handler(sent[0].text.slice(4), {
+      ...sessionCtx,
+      mode: "tui",
+      hasUI: true,
+      async waitForIdle() {},
+      async switchSession(path: string, options: any) {
+        switched = path;
+        await options.withSession({
+          ui: { notify() {} },
+          async sendMessage(message: any, opts: any) { continuation = { message, opts }; },
+        });
+        return { cancelled: false };
+      },
+      ui: { notify() {} },
+    });
+    assert.notEqual(switched, "", "Pi should switch into the target repository");
+    const destination = SessionManager.open(switched, sessions);
+    assert.equal(destination.getCwd(), realpathSync(target));
+    assert.equal(continuation.message.display, false);
+    assert.equal(continuation.opts.triggerTurn, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("cross-repository switch accepts -C before the command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-worktrunk-cross-repo-prefix-"));
+  const source = join(root, "source");
+  const target = join(root, "target");
+  const sessions = join(root, "sessions");
+  await mkdir(join(source, ".git"), { recursive: true });
+  await mkdir(join(target, ".git"), { recursive: true });
+  const manager = SessionManager.create(source, sessions);
+  manager.appendSessionInfo("test");
+  const handlers = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const tools = new Map<string, any>();
+  let switched = "";
+  try {
+    extension(baseApi({ handlers, commands, tools, async exec(program, args, options) {
+      if (program === "git") return { code: 0, stdout: `${join(options?.cwd ?? source, ".git")}\n`, stderr: "" };
+      if (args[0] === "--help") return { code: 0, stdout: "" };
+      if (args.includes("list")) {
+        const path = options?.cwd === target ? target : source;
+        return { code: 0, stdout: list([{ branch: "main", worktree: { path, main: true, current: true } }]) };
+      }
+      return { code: 0, stdout: "switched" };
+    } }));
+    const sessionCtx = { cwd: source, signal: undefined, sessionManager: manager };
+    await handlers.get("session_start")({}, sessionCtx);
+    await commands.get("wt").handler(`-C ${target} switch @`, {
+      ...sessionCtx,
+      mode: "tui",
+      hasUI: true,
+      async waitForIdle() {},
+      async switchSession(path: string, options: any) {
+        switched = path;
+        await options.withSession({ ui: { notify() {} } });
+        return { cancelled: false };
+      },
+      ui: { notify() {} },
+    });
+    assert.equal(SessionManager.open(switched, sessions).getCwd(), realpathSync(target));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("model list bypasses the picker and receives Worktrunk output", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-worktrunk-list-"));
   const source = join(root, "repo");

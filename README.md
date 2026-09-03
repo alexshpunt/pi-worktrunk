@@ -17,6 +17,7 @@ pi install npm:pi-worktrunk
 /wt list
 /wt switch main
 /wt switch --create fix/parser
+/wt switch -C ../other-repository @
 /wt land
 /wt config show
 ```
@@ -30,7 +31,8 @@ Two bare commands open compact Pi interfaces:
 - `/wt switch` opens the worktree picker and moves to the selected worktree.
 
 After other successful commands, Pi moves when Worktrunk reports a destination
-or creates exactly one worktree. If the command removes the current worktree,
+or creates exactly one worktree. An explicit `-C` also lets Pi follow a switch
+into another repository. If the command removes the current worktree,
 Pi recovers in a surviving worktree. Pi stays put when no unique destination can
 be identified or when a command fails without removing the current worktree.
 
