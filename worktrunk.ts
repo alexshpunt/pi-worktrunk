@@ -37,9 +37,6 @@ type RunWtOptions = {
 };
 type RunWt = (args: string[], options?: RunWtOptions) => Promise<WtResult>;
 
-type SwitchSessionOptions = NonNullable<Parameters<ExtensionCommandContext["switchSession"]>[1]>;
-type ReplacedSessionContext = Parameters<NonNullable<SwitchSessionOptions["withSession"]>>[0];
-
 export type SessionSnapshot = { header: SessionHeader; entries: SessionEntry[] };
 type Relation = { ahead?: number; behind?: number };
 type WorktreeItem = {
@@ -658,28 +655,30 @@ export default function extension(pi: ExtensionAPI) {
     output?: string,
   ) {
     const { sourceSession, destinationSession } = prepareLinkedSession(ctx, source, target, trail, kind);
-    let nextCtx: ReplacedSessionContext | undefined;
+    let replacementStarted = false;
     let result: Awaited<ReturnType<ExtensionCommandContext["switchSession"]>>;
     try {
       result = await ctx.switchSession(destinationSession, {
-        withSession: async (replacementCtx) => { nextCtx = replacementCtx; },
+        withSession: async (replacementCtx) => {
+          replacementStarted = true;
+          try {
+            rmSync(sourceSession);
+          } catch (error) {
+            throw new WorktrunkError(`Pi moved to ${destinationSession}, but could not remove the source session ${sourceSession}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          replacementCtx.ui.notify(`Session ${kind === "recovery" ? "recovered" : "moved"} from ${source.branch ?? source.path} to ${target.branch ?? target.path}.`, "info");
+          if (output) emit(replacementCtx, output, "info");
+          if (continuation) await replacementCtx.sendMessage(continuation, { triggerTurn: true });
+        },
       });
     } catch (error) {
-      rmSync(destinationSession, { force: true });
+      if (!replacementStarted) rmSync(destinationSession, { force: true });
       throw error;
     }
-    if (result.cancelled || !nextCtx) {
+    if (result.cancelled || !replacementStarted) {
       rmSync(destinationSession, { force: true });
       throw new WorktrunkError(`Pi prepared ${destinationSession}, but session switching was cancelled.`);
     }
-    try {
-      rmSync(sourceSession);
-    } catch (error) {
-      throw new WorktrunkError(`Pi moved to ${destinationSession}, but could not remove the source session ${sourceSession}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    nextCtx.ui.notify(`Session ${kind === "recovery" ? "recovered" : "moved"} from ${source.branch ?? source.path} to ${target.branch ?? target.path}.`, "info");
-    if (output) emit(nextCtx, output, "info");
-    if (continuation) await nextCtx.sendMessage(continuation, { triggerTurn: true });
   }
 
   async function executeInvocation(invocation: Invocation, ctx: ExtensionCommandContext, modelOrigin = false): Promise<Execution> {

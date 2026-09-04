@@ -514,6 +514,7 @@ test("create-and-switch moves and resumes model work", async () => {
       },
     }));
     const sessionCtx = { cwd: source, signal: undefined, sessionManager: manager };
+    let replacementCallbackActive = false;
     await handlers.get("session_start")({}, sessionCtx);
     await tools.get("worktrunk").execute("call", { command: "switch", args: ["--create", "fix/parser"] }, undefined, undefined, { cwd: source, hasUI: true, ui: {} });
     await commands.get("wt").handler(sent[0].text.slice(4), {
@@ -521,10 +522,15 @@ test("create-and-switch moves and resumes model work", async () => {
       async waitForIdle() {},
       async switchSession(path: string, options: any) {
         switched = path;
+        replacementCallbackActive = true;
         await options.withSession({
           ui: { notify() {} },
-          async sendMessage(message: any, opts: any) { continuation = { message, opts }; },
+          async sendMessage(message: any, opts: any) {
+            assert.equal(replacementCallbackActive, true, "continuation must be sent inside withSession");
+            continuation = { message, opts };
+          },
         });
+        replacementCallbackActive = false;
         return { cancelled: false };
       },
       ui: { notify() {} },

@@ -36,13 +36,15 @@
     "typebox": "*"
   },
   "scripts": {
-    "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts scripts/*.test.ts && bun run check-reference",
+    "check": "tsc --noEmit && node --test --experimental-strip-types *.test.ts scripts/*.test.ts && bun run test:integration && bun run check-reference",
     "check-reference": "node --experimental-strip-types scripts/generate-worktrunk-reference.ts --check",
     "generate-reference": "node --experimental-strip-types scripts/generate-worktrunk-reference.ts",
-    "test": "node --test --experimental-strip-types *.test.ts scripts/*.test.ts"
+    "test": "node --test --experimental-strip-types *.test.ts scripts/*.test.ts",
+    "test:integration": "pi-test run -- node --test --experimental-strip-types worktrunk.integration.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "pi-coding-agent-test": "^0.1.1",
     "typescript": "^5.9.0"
   },
   "publishConfig": {
