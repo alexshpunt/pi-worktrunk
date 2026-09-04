@@ -521,7 +521,6 @@ export default function extension(pi: ExtensionAPI) {
   let installedCommands: WorktrunkCommand[] = [];
   let installedVersion: string | undefined;
   let pendingContinuation: PendingContinuation | undefined;
-  let placementInFlight = false;
   const commandNames = new Set<string>(WORKTRUNK_COMMANDS);
   const aliasNames = new Set<string>();
 
@@ -791,14 +790,6 @@ export default function extension(pi: ExtensionAPI) {
         const args = nonce ? received.args.slice(0, -1) : received.args;
         const invocation = parseWtInvocation(args.map(quoteArgument).join(" "));
         const key = JSON.stringify(invocation.args);
-        if (
-          nonce &&
-          pendingContinuation?.nonce === nonce &&
-          pendingContinuation.expiresAt <= Date.now()
-        ) {
-          pendingContinuation = undefined;
-          placementInFlight = false;
-        }
         modelOrigin = Boolean(
           nonce &&
           pendingContinuation &&
@@ -806,9 +797,7 @@ export default function extension(pi: ExtensionAPI) {
           pendingContinuation.nonce === nonce &&
           pendingContinuation.key === key,
         );
-        if (nonce && !modelOrigin) {
-          throw new WorktrunkError("Invalid or expired model continuation token.");
-        }
+        if (nonce && !modelOrigin) return;
         if (modelOrigin) pendingContinuation = undefined;
         const execution = await executeInvocation(invocation, ctx, modelOrigin);
         if (modelOrigin && !execution.moved && execution.canContinue) {
@@ -816,8 +805,6 @@ export default function extension(pi: ExtensionAPI) {
         }
       } catch (error) {
         reportCommandError(ctx, error);
-      } finally {
-        if (modelOrigin) placementInFlight = false;
       }
     },
   });
@@ -888,14 +875,6 @@ export default function extension(pi: ExtensionAPI) {
         if (isBareCommand(invocation, "switch")) {
           throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
         }
-        if (pendingContinuation && pendingContinuation.expiresAt <= Date.now()) {
-          pendingContinuation = undefined;
-          placementInFlight = false;
-        }
-        if (placementInFlight) {
-          throw new WorktrunkError("Another model-triggered Worktrunk invocation is still pending.");
-        }
-
         if (ctx.mode === "print" || ctx.mode === "json") {
           const placementCommand = nonInteractivePlacementCommand(invocation);
           if (placementCommand) {
@@ -926,7 +905,6 @@ export default function extension(pi: ExtensionAPI) {
           };
         }
         const nonce = randomUUID();
-        placementInFlight = true;
         pendingContinuation = {
           key: JSON.stringify(args),
           nonce,
@@ -966,7 +944,6 @@ export default function extension(pi: ExtensionAPI) {
   pi.on("agent_end", (_event, ctx) => tracker.markWaiting(ctx.cwd));
   pi.on("session_shutdown", (_event, ctx) => {
     pendingContinuation = undefined;
-    placementInFlight = false;
     return tracker.clear(ctx.cwd);
   });
 }

@@ -214,42 +214,52 @@ test("reload during a Worktrunk command does not report through stale context", 
   assert.deepEqual(notifications, []);
 });
 
-test("tool queues aliases without confirmation", async () => {
+test("a new model invocation supersedes an orphaned continuation", async () => {
   const handlers = new Map<string, any>();
   const commands = new Map<string, any>();
   const tools = new Map<string, any>();
   const sent: Array<{ text: string; options: any }> = [];
+  const worktrunkCalls: string[][] = [];
   extension(baseApi({
     handlers, commands, tools, sent,
     async exec(program, args) {
       if (program === "git") return { code: 1, stdout: "", stderr: "" };
       if (args[0] === "--help") return { code: 0, stdout: "Aliases:\n  land\n" };
       if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ project: { config: { aliases: { land: [{ verify: "x" }] } } } }) };
+      if (args[0] === "land" || args[0] === "list") worktrunkCalls.push([...args]);
       return { code: 0, stdout: "" };
     },
   }));
-  await handlers.get("session_start")({}, { cwd: process.cwd(), signal: undefined, sessionManager: { getEntries: () => [] } });
-  const result = await tools.get("worktrunk").execute("call", { command: "land", args: ["-v", "two words"] }, undefined, undefined, {
+  const sessionManager = { getEntries: () => [], getSessionFile: () => undefined };
+  await handlers.get("session_start")({}, { cwd: process.cwd(), signal: undefined, sessionManager });
+
+  const first = await tools.get("worktrunk").execute("first", { command: "land", args: ["-v", "two words"] }, undefined, undefined, {
     cwd: process.cwd(), hasUI: false, ui: {},
   });
-  assert.equal(result.terminate, true);
+  const second = await tools.get("worktrunk").execute("second", { command: "list" }, undefined, undefined, {
+    cwd: process.cwd(), hasUI: false, ui: {},
+  });
+
+  assert.equal(first.terminate, true);
+  assert.equal(second.terminate, true);
   assert.match(sent[0].text, /^\/wt 'land' '-v' 'two words' '__pi_worktrunk_continuation=[^']+'$/);
+  assert.match(sent[1].text, /^\/wt 'list' '__pi_worktrunk_continuation=[^']+'$/);
   assert.deepEqual(sent[0].options, {
     deliverAs: "followUp",
     expandPromptTemplates: true,
   });
-  await assert.rejects(
-    tools.get("worktrunk").execute("second", { command: "list" }, undefined, undefined, {
-      cwd: process.cwd(), hasUI: false, ui: {},
-    }),
-    /still pending/,
-  );
 
-  await handlers.get("session_shutdown")({}, { cwd: process.cwd() });
-  await tools.get("worktrunk").execute("after-switch", { command: "list" }, undefined, undefined, {
-    cwd: process.cwd(), hasUI: false, ui: {},
-  });
-  assert.equal(sent.length, 2);
+  const notifications: string[] = [];
+  const commandCtx = {
+    cwd: process.cwd(), signal: undefined, sessionManager, mode: "tui", hasUI: false,
+    async waitForIdle() {},
+    ui: { notify(message: string) { notifications.push(message); } },
+  };
+  await commands.get("wt").handler(sent[0].text.slice(4), commandCtx);
+  await commands.get("wt").handler(sent[1].text.slice(4), commandCtx);
+
+  assert.deepEqual(worktrunkCalls, [["list"]]);
+  assert.deepEqual(notifications, []);
 });
 
 test("non-interactive tools run Worktrunk before the session exits", async () => {
