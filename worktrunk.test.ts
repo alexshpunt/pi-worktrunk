@@ -159,6 +159,61 @@ test("session start registers one repository-specific tool", async () => {
   ]);
 });
 
+test("reload during a Worktrunk command does not report through stale context", async () => {
+  const handlers = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const tools = new Map<string, any>();
+  let commandStarted!: () => void;
+  let finishCommand!: () => void;
+  const started = new Promise<void>((resolve) => { commandStarted = resolve; });
+  const finish = new Promise<void>((resolve) => { finishCommand = resolve; });
+
+  extension(baseApi({
+    handlers, commands, tools,
+    async exec(program, args) {
+      if (program === "git") return { code: 1, stdout: "", stderr: "" };
+      if (args[0] === "--help" || args[0] === "--version" || args[0] === "config") {
+        return { code: 0, stdout: "" };
+      }
+      if (args.includes("list")) return { code: 0, stdout: wtList(process.cwd()) };
+      if (args[0] === "doctor") {
+        commandStarted();
+        await finish;
+      }
+      return { code: 0, stdout: "" };
+    },
+  }));
+  const sessionManager = { getEntries: () => [], getSessionFile: () => undefined };
+  await handlers.get("session_start")({}, { cwd: process.cwd(), signal: undefined, sessionManager });
+
+  let stale = false;
+  const notifications: string[] = [];
+  const commandCtx = new Proxy({
+    cwd: process.cwd(),
+    signal: undefined,
+    sessionManager,
+    mode: "tui",
+    hasUI: true,
+    async waitForIdle() {},
+    ui: { notify(message: string) { notifications.push(message); } },
+  }, {
+    get(target, property, receiver) {
+      if (stale) {
+        throw new Error("This extension ctx is stale after session replacement or reload. Do not use a captured ctx.");
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  const running = commands.get("wt").handler("doctor", commandCtx);
+  await started;
+  stale = true;
+  finishCommand();
+
+  await assert.doesNotReject(running);
+  assert.deepEqual(notifications, []);
+});
+
 test("tool queues aliases without confirmation", async () => {
   const handlers = new Map<string, any>();
   const commands = new Map<string, any>();

@@ -595,6 +595,20 @@ export default function extension(pi: ExtensionAPI) {
     else if (ctx.mode === "json") pi.sendMessage({ customType: "pi-worktrunk-command", content: message, display: true, details: { level } });
     else ctx.ui.notify(message, level);
   }
+  function reportCommandError(ctx: ExtensionCommandContext, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      emit(ctx, message, "error");
+    } catch (reportError) {
+      if (
+        !(reportError instanceof Error) ||
+        !reportError.message.startsWith("This extension ctx is stale after session replacement or reload.")
+      ) {
+        throw reportError;
+      }
+    }
+  }
+
   async function locationFor(item: WorktreeItem, signal?: AbortSignal): Promise<SessionLocation> {
     if (!item.worktree?.path) throw new WorktrunkError("The target worktree has no path.");
     return worktreeLocation(item, item.worktree.path, await readCommonDir(item.worktree.path, signal));
@@ -801,7 +815,7 @@ export default function extension(pi: ExtensionAPI) {
           pi.sendMessage(continuationMessage(invocation, execution), { triggerTurn: true });
         }
       } catch (error) {
-        emit(ctx, error instanceof Error ? error.message : String(error), "error");
+        reportCommandError(ctx, error);
       } finally {
         if (modelOrigin) placementInFlight = false;
       }
