@@ -236,14 +236,14 @@ test("a new model invocation supersedes an orphaned continuation", async () => {
   const first = await tools.get("worktrunk").execute("first", { command: "land", args: ["-v", "two words"] }, undefined, undefined, {
     cwd: process.cwd(), hasUI: false, ui: {},
   });
-  const second = await tools.get("worktrunk").execute("second", { command: "list" }, undefined, undefined, {
+  const second = await tools.get("worktrunk").execute("second", { command: "land" }, undefined, undefined, {
     cwd: process.cwd(), hasUI: false, ui: {},
   });
 
   assert.equal(first.terminate, true);
   assert.equal(second.terminate, true);
   assert.match(sent[0].text, /^\/wt 'land' '-v' 'two words' '__pi_worktrunk_continuation=[^']+'$/);
-  assert.match(sent[1].text, /^\/wt 'list' '__pi_worktrunk_continuation=[^']+'$/);
+  assert.match(sent[1].text, /^\/wt 'land' '__pi_worktrunk_continuation=[^']+'$/);
   assert.deepEqual(sent[0].options, {
     deliverAs: "followUp",
     expandPromptTemplates: true,
@@ -258,8 +258,47 @@ test("a new model invocation supersedes an orphaned continuation", async () => {
   await commands.get("wt").handler(sent[0].text.slice(4), commandCtx);
   await commands.get("wt").handler(sent[1].text.slice(4), commandCtx);
 
-  assert.deepEqual(worktrunkCalls, [["list"]]);
+  assert.deepEqual(worktrunkCalls, [["land"]]);
   assert.deepEqual(notifications, []);
+});
+
+test("model-triggered commands that cannot move the session run immediately", async () => {
+  const handlers = new Map<string, any>();
+  const commands = new Map<string, any>();
+  const tools = new Map<string, any>();
+  const sent: Array<{ text: string; options: any }> = [];
+  const calls: string[][] = [];
+  extension(baseApi({
+    handlers, commands, tools, sent,
+    async exec(program, args) {
+      if (program === "git") return { code: 1, stdout: "", stderr: "" };
+      if (args[0] === "--help" || args[0] === "--version" || args[0] === "config") {
+        return { code: 0, stdout: "" };
+      }
+      calls.push([...args]);
+      return { code: 0, stdout: "committed\n" };
+    },
+  }));
+  await handlers.get("session_start")({}, {
+    cwd: process.cwd(), signal: undefined, sessionManager: { getEntries: () => [] },
+  });
+
+  const result = await tools.get("worktrunk").execute(
+    "commit",
+    { command: "step", args: ["commit", "--stage", "all", "--format", "json"] },
+    undefined,
+    undefined,
+    { cwd: process.cwd(), mode: "tui", hasUI: true, ui: {} },
+  );
+
+  assert.deepEqual(calls, [["step", "commit", "--stage", "all", "--format", "json"]]);
+  assert.equal(result.content[0].text, "committed");
+  assert.deepEqual(result.details, {
+    args: ["step", "commit", "--stage", "all", "--format", "json"],
+    code: 0,
+  });
+  assert.equal(result.terminate, undefined);
+  assert.deepEqual(sent, []);
 });
 
 test("non-interactive tools run Worktrunk before the session exits", async () => {
@@ -674,7 +713,7 @@ test("cross-repository switch accepts -C before the command", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("model list bypasses the picker and receives Worktrunk output", async () => {
+test("model list runs immediately and receives Worktrunk output", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-worktrunk-list-"));
   const source = join(root, "repo");
   await mkdir(join(source, ".git"), { recursive: true });
@@ -694,19 +733,14 @@ test("model list bypasses the picker and receives Worktrunk output", async () =>
     const manager = SessionManager.create(source, join(root, "sessions"));
     manager.appendSessionInfo("test");
     await handlers.get("session_start")({}, { cwd: source, sessionManager: manager });
-    await tools.get("worktrunk").execute("call", { command: "list" }, undefined, undefined, {
+    const result = await tools.get("worktrunk").execute("call", { command: "list" }, undefined, undefined, {
       cwd: source, hasUI: true, ui: {},
     });
-    await commands.get("wt").handler(sent[0].text.slice(4), {
-      cwd: source, mode: "tui", hasUI: true, sessionManager: manager,
-      async waitForIdle() {},
-      ui: {
-        notify() {},
-        async select() { throw new Error("model list must not open a picker"); },
-      },
-    });
-    assert.match(messages.at(-1)?.message.content ?? "", /completed successfully.*main worktree/s);
-    assert.equal(messages.at(-1)?.options.triggerTurn, true);
+
+    assert.equal(result.content[0].text, "main worktree");
+    assert.equal(result.terminate, undefined);
+    assert.deepEqual(sent, []);
+    assert.deepEqual(messages, []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

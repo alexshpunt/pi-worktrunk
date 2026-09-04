@@ -91,6 +91,19 @@ const CONTINUATION_ARG_PREFIX = "__pi_worktrunk_continuation=";
 const REPOSITORY_IDENTITY_ENTRY = "pi-worktrunk-repository";
 const WORKTRUNK_ALIAS_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
+const MODEL_SAFE_STEP_COMMANDS = new Set([
+  "commit",
+  "squash",
+  "rebase",
+  "push",
+  "diff",
+  "copy-ignored",
+  "eval",
+  "for-each",
+  "prune",
+  "tether",
+]);
+
 class WorktrunkError extends Error {
   constructor(message: string) {
     super(message);
@@ -394,6 +407,13 @@ function positionalCommandArgs(invocation: Invocation): string[] {
   }
   return result;
 }
+function canRunDuringModelTurn(invocation: Invocation): boolean {
+  if (invocation.command === "list" || invocation.command === "config") return true;
+  if (invocation.command !== "step") return false;
+  const subcommand = positionalCommandArgs(invocation)[0];
+  return subcommand !== undefined && MODEL_SAFE_STEP_COMMANDS.has(subcommand);
+}
+
 function nonInteractivePlacementCommand(invocation: Invocation): string | undefined {
   if (invocation.command === "switch") return "wt switch";
   if (invocation.command === "step" && positionalCommandArgs(invocation)[0] === "promote") {
@@ -875,11 +895,14 @@ export default function extension(pi: ExtensionAPI) {
         if (isBareCommand(invocation, "switch")) {
           throw new WorktrunkError("The worktrunk tool requires an explicit target for `wt switch`.");
         }
-        if (ctx.mode === "print" || ctx.mode === "json") {
+        const nonInteractive = ctx.mode === "print" || ctx.mode === "json";
+        if (nonInteractive) {
           const placementCommand = nonInteractivePlacementCommand(invocation);
           if (placementCommand) {
             throw new WorktrunkError(`\`${placementCommand}\` requires TUI or RPC mode so Pi can preserve session placement.`);
           }
+        }
+        if (nonInteractive || canRunDuringModelTurn(invocation)) {
           const result = await runWt(args, { cwd: ctx.cwd, signal: _signal, cwdMode: "repository-read" });
           const output = boundedModelOutput(
             [result.stdout?.trimEnd(), result.stderr?.trimEnd()].filter(Boolean).join("\n"),
