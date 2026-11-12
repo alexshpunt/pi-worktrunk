@@ -11,7 +11,6 @@ import {
   type SessionEntry,
   type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -20,6 +19,7 @@ import {
   WORKTRUNK_REFERENCE,
   WORKTRUNK_REFERENCE_VERSION,
 } from "./worktrunk-reference.ts";
+import { StringEnum } from "./string-enum.ts";
 
 export const MARKERS = { working: "🤖", waiting: "💬" } as const;
 

@@ -6,6 +6,7 @@
   "files": [
     "worktrunk.ts",
     "worktrunk-reference.ts",
+    "string-enum.ts",
     "README.md",
     "LICENSE"
   ],
@@ -43,8 +44,12 @@
     "test:integration": "pi-test run -- node --test --experimental-strip-types worktrunk.integration.ts"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "@types/node": "^24.0.0",
     "pi-coding-agent-test": "^0.1.1",
+    "typebox": "^1.3.27",
     "typescript": "^5.9.0"
   },
   "publishConfig": {
