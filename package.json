@@ -6,6 +6,7 @@
   "files": [
     "worktrunk.ts",
     "worktrunk-reference.ts",
+    "string-enum.ts",
     "README.md",
     "LICENSE"
   ],
